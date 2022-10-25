@@ -145,6 +145,23 @@ df <-
   left_join(state, on = "ST")
 
 
+# Add redistricting type --------------------------------------------------
+
+# Seperate Singel state districts
+sds <- c("WY", "SD", "ND", "AK", "VT", "DE")
+
+commission <- c("WA", "CA", "AZ", "CO", "ID", "MT", "MI", "NJ", "VA", "NY")
+
+df <- 
+  df %>% 
+  mutate(
+    red_scale =
+      case_when(
+        ST %in% sds ~ -1,
+        ST %in% commission ~ 1)  %>% 
+      replace_na(0))
+
+
 # Add Primary Election Data -----------------------------------------------
 
 # Pull data from NCSL:
@@ -268,6 +285,14 @@ df <- df %>% left_join(fundraising, by = c("ST","last_name"))
 
 # Create Keys and Add Data ------------------------------------------------
 
+# Create redistricting key
+red_key <- 
+  data.frame(
+    red_scale = 
+      c(-1,0,1),
+    red_key = 
+      c("Single District\nState","Legislature","Comission"))
+
 # Create key for primary openness
 
 primaries_key <- 
@@ -317,9 +342,9 @@ stance_key <-
     Stance_key = 
       c("Full Denial","Acceptance with \nReservations","No Comment","Acceptance","Raised Questions","No Comment","Not Tracked by 538"),
     stance_scale_reduced = 
-      c(-1,-1,0,1,-1,0,NA),
+      c(0,0,1,1,0,1,NA),
     stance_key_reduced = 
-      c("Questioned Election","Questioned Election","No Comment","Acceptance","Questioned Election","No Comment","Not Tracked by 538")
+      c("Questioned Election","Questioned Election","Has Not Questioned Election","Has Not Questioned Election","Questioned Election","Has Not Questioned Election","Not Tracked by 538")
     ) %>% 
   arrange(Stance_scale)
 
@@ -328,7 +353,8 @@ stance_key <-
 df <- df %>% 
   left_join(stance_key) %>% 
   left_join(comp_key) %>% 
-  left_join(primaries_key)
+  left_join(primaries_key) %>% 
+  left_join(red_key)
 
 # Check to ensure Alaska is the only state 
 df %>% group_by(ST_dist) %>% filter(n()>1) %>% ungroup()
@@ -360,6 +386,22 @@ names(df) <- gsub("cand_", "fec_", names(df))
 
 # Clean and Save ----------------------------------------------------------
 
+cart <- 
+  read_excel("data/raw/cd_cart_hex_118.xlsx") %>% 
+  
+  # Fix gross col name
+  
+  mutate(ST_dist = `ST#`, .keep = "unused") %>% 
+  
+  # remove unnecessary and unlisenced variables
+  
+  select(State, dist, PVI, metric, pvi_range, View, ST_dist, ST)
+
+df <- df %>% inner_join(
+  read_excel("data/raw/cd_cart_hex_118.xlsx") %>% 
+    mutate(st_dist = `ST#`, .keep = "unused") %>% filter(View != "Cartogram") %>% select(X,Y, st_dist), 
+  on = "st_dist")
+
 # Write df
 write.csv(df, "data/processed/main_data.csv")
 
@@ -367,20 +409,22 @@ write.csv(df, "data/processed/main_data.csv")
 
 rm(list=setdiff(ls(), "df"))
 
+df %>% ggplot(aes(stance))
+
 # Explore -----------------------------------------------------------------
 
 library(scales)
 
 #stance_by_fundraising <-
-df %>% select(incumbent, stance_scale, stance_key, fund_self_pct, fund_indiv_pct, fund_party_pct, fund_other_pct) %>% 
-  na.omit() %>% group_by(stance_scale, stance_key, incumbent) %>% 
+df %>% select(incumbent, stance_scale_reduced, stance_key_reduced, fund_self_pct, fund_indiv_pct, fund_party_pct, fund_other_pct) %>% 
+  na.omit() %>% group_by(stance_scale_reduced, stance_key_reduced, incumbent) %>% 
   summarize(
     avg_self_fund = mean(fund_self_pct), 
     avg_indiv_fund = mean(fund_indiv_pct),
     avg_party_fund = mean(fund_party_pct),
     avg_other_fund = mean(fund_other_pct)) %>% 
   pivot_longer(avg_self_fund:avg_other_fund, names_to = "fund_type", values_to = "avg") %>% 
-  ggplot(aes(reorder(stance_key, -stance_scale), avg, fill = fund_type)) +
+  ggplot(aes(reorder(stance_key_reduced, -stance_scale_reduced), avg, fill = fund_type)) +
   # Add Bar
   geom_bar(stat = "identity", position = "stack") +
   #scale_fill_manual(values = stance_colors, name = NULL) +
@@ -390,15 +434,15 @@ df %>% select(incumbent, stance_scale, stance_key, fund_self_pct, fund_indiv_pct
 theme_classic() 
 
 #stance_by_fundraising <-
-df %>% select(incumbent, stance_scale, stance_key, fund_self, fund_indiv, fund_other) %>% # fund_party, 
-  na.omit() %>% group_by(stance_scale, stance_key, incumbent) %>% 
+df %>% select(incumbent, stance_scale_reduced, stance_key_reduced, fund_self, fund_indiv, fund_other) %>% # fund_party, 
+  na.omit() %>% group_by(stance_scale_reduced, stance_key_reduced, incumbent) %>% 
   summarize(
     avg_self_fund = mean(fund_self), 
     avg_indiv_fund = mean(fund_indiv),
     #avg_party_fund = mean(fund_party),
     avg_other_fund = mean(fund_other)) %>% 
   pivot_longer(avg_self_fund:avg_other_fund, names_to = "fund_type", values_to = "avg") %>% 
-  ggplot(aes(reorder(stance_key, -stance_scale), avg, fill = fund_type)) +
+  ggplot(aes(reorder(stance_key_reduced, -stance_scale_reduced), avg, fill = fund_type)) +
   # Add Bar
   geom_bar(stat = "identity", position = "dodge") +
   #scale_fill_manual(values = stance_colors, name = NULL) +
@@ -408,7 +452,9 @@ df %>% select(incumbent, stance_scale, stance_key, fund_self, fund_indiv, fund_o
 
 #ggsave("images/stance_by_fundraising.png", device = png)
 
-stance_colors <- c("purple","lavender","grey","red","darkred","black")
+stance_colors <- c("darkorchid4","darkorchid1","grey","red","darkred","black")
+
+df %>% ggplot(aes(X,Y, color =  reorder(stance_key_reduced, -stance_scale_reduced))) + geom_point() + scale_color_manual(values = stance_colors, name = NULL) + theme_classic()
 
 stance_by_comp <- df %>%
   select(comp_scale, comp_key, stance_key, stance_scale) %>%
@@ -445,8 +491,8 @@ ggsave("images/stance_by_primary_open.png", device = png)
 
 stance_by_primary_open_reduced <-
   df %>%
-  filter(incumbent == "No") %>% 
-  filter(state != "California") %>% 
+  filter(stance_key != "Not Tracked by 538") %>% 
+  #filter(state != "California") %>% 
   select(primary_scale_reduced, primary_type_reduced, stance_scale, stance_key) %>%
   # Summarize data by count
   group_by(primary_scale_reduced, primary_type_reduced, stance_scale, stance_key) %>%
@@ -456,15 +502,36 @@ stance_by_primary_open_reduced <-
   # Add Bar
   geom_bar(stat = "identity", position = "fill") +
   scale_fill_manual(values = stance_colors, name = NULL) +
-  labs(x = "Primary Type", y = "Porportion of Candidates", title = "Election Denial by Primary Openess (Non-Incumbents)") +
+  labs(x = "Primary Type", y = "Porportion of Candidates", title = "1.A: Election Denial by Primary Openess", subtitle = "All House Candidates") +
   scale_y_continuous(labels = percent) + 
   theme_classic()
 
 ggsave("images/stance_by_primary_open_reduced.png", device = png)
 
+stance_by_primary_open_reduced_noinc <-
+  df %>%
+  filter(stance_key != "Not Tracked by 538") %>% 
+  filter(incumbent == "No") %>% 
+  #filter(state != "California") %>% 
+  select(primary_scale_reduced, primary_type_reduced, stance_scale, stance_key) %>%
+  # Summarize data by count
+  group_by(primary_scale_reduced, primary_type_reduced, stance_scale, stance_key) %>%
+  summarise(total_count=n()) %>%
+  # Plot
+  ggplot(aes(reorder(primary_type_reduced, primary_scale_reduced), total_count, fill = reorder(stance_key, -stance_scale))) +
+  # Add Bar
+  geom_bar(stat = "identity", position = "fill") +
+  scale_fill_manual(values = stance_colors, name = NULL) +
+  labs(x = "Primary Type", y = "Porportion of Candidates", title = "1.B: Election Denial by Primary Openess", subtitle = "Incumbents Excluded") +
+  scale_y_continuous(labels = percent) + 
+  theme_classic()
+
+ggsave("images/stance_by_primary_open_reduced_noninc.png", device = png)
+
 
 stance_by_primary_thresh <-
   df %>%
+  filter(stance_key != "Not Tracked by 538") %>% 
   select(req_majority, stance_scale, stance_key) %>%
   mutate(req_majority = ifelse(req_majority == 1, "Majority", "Plurality")) %>% 
   # Summarize data by count
@@ -475,11 +542,13 @@ stance_by_primary_thresh <-
   # Add Bar
   geom_bar(stat = "identity", position = "fill") +
   scale_fill_manual(values = stance_colors, name = NULL) +
-  labs(x = "Primary Victory Threshold", y = "Porportion of Candidates", title = "Election Denial by Primary Threshold") +
+  labs(x = "Primary Victory Threshold", y = "Porportion of Candidates", title = "1.C: Election Denial by Primary Threshold", subtitle = "All House Candidates") +
   scale_y_continuous(labels = percent) + 
   theme_classic()
 
 ggsave("images/stance_by_primary_thresh.png", device = png)
+
+lemon::grid_arrange_shared_legend(stance_by_primary_open_reduced,stance_by_primary_open_reduced_noinc, stance_by_primary_thresh, ncol = 3)
 
 stance_by_incumbency <-
   df %>%
@@ -498,6 +567,26 @@ stance_by_incumbency <-
   theme_classic()
 
 ggsave("images/stance_by_incumbency.png", device = png)
+
+stance_by_red <-
+  df %>%
+  filter(red_key != "Single District\nState") %>% 
+  select(red_key, stance_scale, stance_key) %>%
+  drop_na() %>% 
+  # Summarize data by count
+  group_by(red_key, stance_scale, stance_key) %>%
+  summarise(total_count=n()) %>%
+  # Plot
+  ggplot(aes(red_key, total_count, fill = reorder(stance_key, -stance_scale))) +
+  # Add Bar
+  geom_bar(stat = "identity", position = "fill") +
+  scale_fill_manual(values = stance_colors, name = NULL) +
+  labs(x = "Redistricting Type", y = "Porportion of Candidates", title = "Election Denial by Redistricting Method", subtitile = "Election Denail Less Common in Commission Drawn Seats" caption = "Single-district states excluded") +
+  scale_y_continuous(labels = percent) + 
+  theme_classic()
+
+ggsave("images/stance_by_redistricting.png", device = png)
+
 
 data_summary <- function(x) {
   m <- median(x)
@@ -518,7 +607,7 @@ stance_by_distortion <-
                show.legend = FALSE) +
   scale_fill_manual(values = stance_colors, 
                     name = NULL) + 
-  labs(title = "Figure 2.B: District Distortion", y = "District Distortion", x = "Stance") + 
+  labs(title = "Figure 2.B: District Distortion", y = "District Distortion", x = "Stance", caption = "Summarized by Median and Single Standard Deviation Bars") + 
   scale_y_continuous(
     breaks=c(-.2, 0, .2),
     labels=c("More Democratic", "Neutral", "More Republican")) +
@@ -532,6 +621,36 @@ stance_by_distortion <-
         axis.line.x = element_blank())
 
 ggsave("images/stance_by_distorition.png", device = png)
+
+stance_by_distortion_jitter <- 
+  df %>% 
+  select(stance_key,dist_pol,stance_scale) %>% 
+  filter(stance_key != "Not Tracked by 538") %>% 
+  ggplot(aes(reorder(stance_key, -stance_scale),dist_pol, color = reorder(stance_key, -stance_scale))) + 
+  geom_jitter(width = .2) +
+  stat_summary(
+    geom = "point",
+    fun = "median",
+    col = "black",
+    size = 10,
+    shape = 3,
+    stroke = 2) +
+  scale_color_manual(values = stance_colors, 
+                     name = NULL) + 
+  labs(title = "Figure 2.B: Election Denial Stance District Distortion", y = "District Distortion", x = "Stance", caption = 'The "+" indicates median value') + 
+  scale_y_continuous(
+    breaks=c(-.2, 0, .2),
+    labels=c("More Democratic", "Neutral", "More Republican")) +
+  geom_hline(yintercept=0, linetype="dashed", color = "black", alpha = .5) +
+  theme_classic() +
+  theme(axis.text.y = element_text(angle = 90, hjust = .5, vjust = 1),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        #axis.title.y = element_blank(),
+        axis.title.x = element_blank(),
+        axis.line.x = element_blank())
+
+ggsave("images/stance_by_distortion_jitter.png", device = png)
 
 stance_by_distortion_lim <-
   df %>% 
@@ -573,20 +692,50 @@ stance_by_polarity <-
                show.legend = FALSE) +
   scale_fill_manual(values = stance_colors, 
                     name = NULL) + 
-  labs(title = "Figure 2.B: District Polarity", y = "District PVI", x = "Stance") + 
+  labs(title = "Election Denial by District Polarity", y = "District PVI", x = "Stance") + 
   scale_y_continuous(
-    breaks=c(.3,.5,.7),
-    labels=c("D+20", "Even", "R+20")) +
+    breaks=c(.2,.3,.4,.5,.6,.7,.8),
+    labels=c("D+30", "D+20", "D+10", "Even", "R+10", "R+20", "R+30")) +
   geom_hline(yintercept=.5, linetype="dashed", color = "black", alpha = .5) +
   theme_classic() +
   theme(axis.text.y = element_text(angle = 90, hjust = .5, vjust = 1),
         axis.text.x = element_blank(),
         axis.ticks.x = element_blank(),
-        axis.title.y = element_blank(),
+        #axis.title.y = element_blank(),
         axis.title.x = element_blank(),
         axis.line.x = element_blank())
 
 ggsave("images/stance_by_polarity.png", device = png)
+
+stance_by_polarity_jitter <- 
+  df %>% 
+  select(stance_key,metric,stance_scale) %>% 
+  filter(stance_key != "Not Tracked by 538") %>% 
+  ggplot(aes(reorder(stance_key, -stance_scale),metric, color = reorder(stance_key, -stance_scale))) + 
+  geom_jitter(width = .2) +
+  stat_summary(
+    geom = "point",
+    fun = "median",
+    col = "black",
+    size = 10,
+    shape = 3,
+    stroke = 2) +
+  scale_color_manual(values = stance_colors, 
+                    name = NULL) + 
+  labs(title = "Figure 2.A: Election Denial by District Polarity", y = "District Political Leaning (PVI)", x = "Stance", caption = 'The "+" indicates median value') + 
+  scale_y_continuous(
+    breaks=c(.2,.3,.4,.5,.6,.7,.8),
+    labels=c("D+30", "D+20", "D+10", "Even", "R+10", "R+20", "R+30")) +
+  geom_hline(yintercept=.5, linetype="dashed", color = "black", alpha = .5) +
+  theme_classic() +
+  theme(#axis.text.y = element_text(angle = 90, hjust = .5, vjust = 1),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        #axis.title.y = element_blank(),
+        axis.title.x = element_blank(),
+        axis.line.x = element_blank())
+
+ggsave("images/stance_by_polarity_jitter.png", device = png)
 
 stance_by_polarity_lim <-
   df %>% 
@@ -619,8 +768,9 @@ ggsave("images/stance_by_polarity_lim.png", device = png)
 lemon::grid_arrange_shared_legend(stance_by_distortion, stance_by_polarity, ncol = 2)
 
 df %>% 
-  select(stance_key, fund_indiv, metric, stance_scale) %>% 
-  ggplot(aes(metric,fund_indiv, color = reorder(stance_key, -stance_scale))) +
+  filter(stance != "Not Tracked by 538") %>% 
+  select(stance_key_reduced, fund_indiv, metric, stance_scale_reduced) %>% 
+  ggplot(aes(metric,fund_indiv, color = reorder(stance_key_reduced, -stance_scale_reduced))) +
   #geom_line(stat = "summary_bin", binwidth = .03) +
   geom_point() +
   scale_color_manual(values = stance_colors, name = NULL) +
@@ -669,4 +819,75 @@ ggsave("images/primary_thresh_by_state.png", device = png)
 
 length(df %>% filter(is.na(stance)))
 sum(table(df$stance))
+
+
+# Jitters -----------------------------------------------------------------
+
+stance_by_polarity_jitter_lim <- 
+  df %>% 
+  select(stance_key_reduced,metric,stance_scale_reduced) %>% 
+  filter(stance_key_reduced != "Not Tracked by 538") %>% 
+  ggplot(aes(reorder(stance_key_reduced, -stance_scale_reduced),metric, color = reorder(stance_key_reduced, -stance_scale_reduced))) + 
+  geom_jitter(width = .2) +
+  stat_summary(
+    geom = "point",
+    fun = "median",
+    col = "black",
+    size = 10,
+    shape = 3,
+    stroke = 2) +
+  scale_color_manual(values = c("DarkOrchid1","red"), 
+                     name = NULL) + 
+  labs(title = "Figure 2.A: Election Denial by District Polarity", y = "District Political Leaning (PVI)", x = "Stance", caption = "", subtitle = "More Conservative Districts Nominate More Election Deniers") + 
+  scale_y_continuous(
+    breaks=c(.2,.3,.4,.5,.6,.7,.8),
+    labels=c("D+30", "D+20", "D+10", "Even", "R+10", "R+20", "R+30")) +
+  geom_hline(yintercept=.5, linetype="dashed", color = "black", alpha = .5) +
+  theme_classic() +
+  theme(axis.text.y = element_text(angle = 90, hjust = .5, vjust = 1),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        #axis.title.y = element_blank(),
+        axis.title.x = element_blank(),
+        axis.line.x = element_blank(),
+        legend.position="none")
+
+ggsave("images/stance_by_polaruty_jitter_lim.png", device = png)
+
+stance_by_distortion_jitter_lim <- 
+  df %>% 
+  select(stance_key_reduced,dist_pol,stance_scale_reduced) %>% 
+  filter(stance_key_reduced != "Not Tracked by 538") %>% 
+  ggplot(aes(reorder(stance_key_reduced, -stance_scale_reduced),dist_pol, color = reorder(stance_key_reduced, -stance_scale_reduced))) + 
+  geom_jitter(width = .2) +
+  stat_summary(
+    geom = "point",
+    fun = "median",
+    col = "black",
+    size = 10,
+    shape = 3,
+    stroke = 2) +
+  scale_color_manual(values = c("DarkOrchid1","red"), 
+                     name = NULL) + 
+  labs(title = "Figure 2.B: Election Denial Stance by District Distortion", y = "District Distortion", x = "Stance", caption = 'The "+" indicates median value', subtitle = "Districts Distorted Towards the GOP Nominate More Election Deniers") + 
+  scale_y_continuous(
+    breaks=c(-.2, 0, .2),
+    labels=c("More Democratic", "Neutral", "More Republican")) +
+  geom_hline(yintercept=0, linetype="dashed", color = "black", alpha = .5) +
+  theme_classic() +
+  theme(axis.text.y = element_text(angle = 90, hjust = .5, vjust = 1),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        #axis.title.y = element_blank(),
+        axis.title.x = element_blank(),
+        axis.line.x = element_blank(),
+        legend.position="none")
+
+ggsave("images/stance_by_distortion_jitter_lim.png", device = png)
+
+lemon::grid_arrange_shared_legend(stance_by_polarity_jitter_lim, stance_by_distortion_jitter_lim, ncol = 2)
+
+
+# Jitter2 -----------------------------------------------------------------
+
 
